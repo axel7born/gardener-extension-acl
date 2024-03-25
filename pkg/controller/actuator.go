@@ -39,7 +39,6 @@ import (
 	istionetworkv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
@@ -202,16 +201,16 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, ex *extension
 		return err
 	}
 
-	if err := a.reconcileVPNEnvoyFilter(ctx, alwaysAllowedCIDRs, istioNamespace, istioLabels); err != nil {
-		return err
-	}
+	// if err := a.reconcileVPNEnvoyFilter(ctx, alwaysAllowedCIDRs, istioNamespace, istioLabels); err != nil {
+	// 	return err
+	// }
 
-	if extState.IstioNamespace != nil && *extState.IstioNamespace != istioNamespace {
-		// we need to cleanup the old vpn object if the istioNamespace changed
-		if err := a.reconcileVPNEnvoyFilter(ctx, alwaysAllowedCIDRs, *extState.IstioNamespace, nil); err != nil {
-			return err
-		}
-	}
+	// if extState.IstioNamespace != nil && *extState.IstioNamespace != istioNamespace {
+	// 	// we need to cleanup the old vpn object if the istioNamespace changed
+	// 	if err := a.reconcileVPNEnvoyFilter(ctx, alwaysAllowedCIDRs, *extState.IstioNamespace, nil); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	extState.IstioNamespace = &istioNamespace
 
@@ -308,58 +307,6 @@ func (a *actuator) Migrate(ctx context.Context, log logr.Logger, ex *extensionsv
 	return a.Delete(ctx, log, ex)
 }
 
-func (a *actuator) reconcileVPNEnvoyFilter(
-	ctx context.Context,
-	alwaysAllowedCIDRs []string,
-	istioNamespace string,
-	istioLabels map[string]string,
-) error {
-	aclMappings, istioLabelsFromExt, err := a.getAllShootsWithACLExtension(ctx, istioNamespace)
-	if err != nil {
-		return err
-	}
-
-	// build EnvoyFilter object as map[string]interface{}
-	// because the actual EnvoyFilter struct is a pain to type
-	name := "acl-vpn"
-
-	// build EnvoyFilter object as map[string]interface{}
-	// because the actual EnvoyFilter struct is a pain to type
-	envoyFilter := &unstructured.Unstructured{}
-	envoyFilter.SetGroupVersionKind(istionetworkv1alpha3.SchemeGroupVersion.WithKind("EnvoyFilter"))
-	envoyFilter.SetNamespace(istioNamespace)
-	envoyFilter.SetName(name)
-
-	if len(aclMappings) == 0 {
-		// no shoot in this namespace with the ACL extension, so we can delete the config
-		err = a.client.Delete(ctx, envoyFilter)
-		return client.IgnoreNotFound(err)
-	}
-	if istioLabels == nil {
-		istioLabels = istioLabelsFromExt
-	}
-
-	vpnEnvoyFilterSpec, err := envoyfilters.BuildVPNEnvoyFilterSpecForHelmChart(
-		aclMappings, alwaysAllowedCIDRs, istioLabels,
-	)
-	if err != nil {
-		return err
-	}
-
-	err = a.client.Get(ctx, client.ObjectKeyFromObject(envoyFilter), envoyFilter)
-	if client.IgnoreNotFound(err) != nil {
-		return err
-	}
-
-	envoyFilter.Object["spec"] = vpnEnvoyFilterSpec
-
-	if apierrors.IsNotFound(err) {
-		return a.client.Create(ctx, envoyFilter)
-	}
-
-	return a.client.Update(ctx, envoyFilter)
-}
-
 func (a *actuator) createSeedResources(
 	ctx context.Context,
 	log logr.Logger,
@@ -396,11 +343,19 @@ func (a *actuator) createSeedResources(
 		return err
 	}
 
+	vpnEnvoyFilterSpec, err := envoyfilters.BuildVPNEnvoyFilterSpecForHelmChart(
+		spec.Rule, shootID, append(alwaysAllowedCIDRs, shootSpecificCIRDs...), defaultIstioLables,
+	)
+	if err != nil {
+		return err
+	}
+
 	cfg := map[string]interface{}{
 		"shootName":              cluster.Shoot.Status.TechnicalID,
 		"targetNamespace":        istioNamespace,
 		"apiEnvoyFilterSpec":     apiEnvoyFilterSpec,
 		"ingressEnvoyFilterSpec": ingressEnvoyFilterSpec,
+		"vpnEnvoyFilterSpec": vpnEnvoyFilterSpec,
 	}
 
 	cfg, err = chart.InjectImages(cfg, imagevector.ImageVector(), []string{ImageName})
